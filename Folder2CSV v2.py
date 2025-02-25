@@ -126,7 +126,7 @@ class FileScanner(QThread):
     def run(self):
         total_files = 0
         processed_files = 0
-        date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        date = datetime.now().strftime("%m/%d/%Y")
         headers = ["Shot Name", "Version Number", "File Type",
                    "File Size (bytes)", "Delivery Date",
                    "Delivery Package Name", "Upload Status",
