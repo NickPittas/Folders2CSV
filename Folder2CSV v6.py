@@ -62,25 +62,18 @@ QHeaderView::section {
 }
 """
 
-# --------------------
-# Expected Naming Requirements (for reference)
-# --------------------
 requirements_str = (
     "Naming requirements:\n"
-    "- The file name must start with exactly 3-4 letters followed by exactly 4 digits.\n"
+    "- File name must start with exactly 3-4 letters followed by exactly 4 digits.\n"
     "- Then an underscore and a description (letters, digits, or hyphens).\n"
     "- Then an underscore and an optional pixel mapping (LL180 or LL360) immediately followed by resolution (digits followed by 'k' or 'K').\n"
     "- Then an underscore and a colorspace+gamma field (no underscores allowed).\n"
     "- Then an optional underscore and fps (digits) may appear (mandatory for sequences and video files).\n"
     "- Then an underscore, then 'v' followed by 1-4 digits (the version).\n"
-    "- For image sequences, the frame padding (e.g. 001 or 0001) must appear and may be preceded by an underscore or a dot before the final dot and extension.\n"
+    "- For image sequences, the frame padding (3 or 4 digits) must appear and may be preceded by an underscore or dot before the final dot and extension.\n"
     "- For video files, a dot and extension follow.\n"
 )
 
-# --------------------
-# Validate a file name against expected criteria.
-# Returns (errors, warnings) lists with only the specific issues.
-# --------------------
 def validate_filename(basename):
     errors = []
     warnings = []
@@ -104,7 +97,6 @@ def validate_filename(basename):
     image_exts = ['exr','jpg','tiff','tif','png','tga','psd']
     ext = groups.get('extension', '').lower()
     if ext in image_exts:
-        # For image sequences (with frame_padding), fps is mandatory.
         if groups.get('frame_padding'):
             if not groups.get('fps'):
                 errors.append("FPS is mandatory for image sequences")
@@ -117,9 +109,7 @@ def validate_filename(basename):
         warnings.append("Optional field 'pixelMapping' is missing")
     return errors, warnings
 
-# --------------------
-# New Naming Convention Parser (updated frame_padding to allow 3 or 4 digits, preceded by _ or .)
-# --------------------
+# Updated regex: frame_padding now uses \d+ to allow any number of digits.
 new_pattern = re.compile(
     r'^(?P<sequence>[A-Za-z]{3,4})(?P<shotNumber>\d{4})_' +
     r'(?P<description>[\w-]+)_' +
@@ -127,20 +117,17 @@ new_pattern = re.compile(
     r'(?P<colorspaceGamma>[^_]+)' +
     r'(?:_(?P<fps>\d+))?_' +
     r'v(?P<version>\d{1,4})' +
-    r'(?:(?:[_\.](?P<frame_padding>\d{3,4}))?\.(?P<extension>[^.]+))$',
+    r'(?:(?:[_\.](?P<frame_padding>\d+))?\.(?P<extension>[^.]+))$',
     re.IGNORECASE
 )
 
-# --------------------
-# Custom QListWidget for Drag and Drop of Folders
-# --------------------
+
 class FolderDropListWidget(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSelectionMode(QListWidget.ExtendedSelection)
         self.setAcceptDrops(True)
         self.setDragDropMode(QListWidget.DropOnly)
-
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -166,9 +153,6 @@ class FolderDropListWidget(QListWidget):
         else:
             event.ignore()
 
-# --------------------
-# FileScanner Thread (Multithreaded)
-# --------------------
 class FileScanner(QThread):
     progress = pyqtSignal(int)
     update_preview = pyqtSignal(dict)
@@ -181,6 +165,15 @@ class FileScanner(QThread):
         self.file_types = file_types
         self.data = []
         self.paused = False
+        self.dir_cache = {}  # Cache for directory listings
+
+    def get_dir_listing(self, directory):
+        if directory not in self.dir_cache:
+            try:
+                self.dir_cache[directory] = os.listdir(directory)
+            except Exception:
+                self.dir_cache[directory] = []
+        return self.dir_cache[directory]
 
     def process_file(self, f):
         basename = os.path.basename(f)
@@ -201,12 +194,19 @@ class FileScanner(QThread):
     def build_data_dict(self, f, m):
         groups = m.groupdict()
         basename = os.path.basename(f)
-        # For image sequences, remove the trailing separator, frame_padding, and extension.
+        # If frame_padding exists, it's a sequence.
         if groups.get("frame_padding"):
-            # Use regex to remove the trailing _ or . plus frame padding and extension.
+            # Remove the trailing separator, frame_padding, and extension.
             version_name = re.sub(r'[_\.]\d{3,4}\.[^.]+$', '', basename)
+            # Count frames in the sequence using the directory cache.
+            directory = os.path.dirname(f)
+            listing = self.get_dir_listing(directory)
+            pattern = re.compile('^' + re.escape(version_name) + r'([_.]\d{3,4})\.' + re.escape(groups['extension']) + '$', re.IGNORECASE)
+            seq_files = [fn for fn in listing if pattern.match(fn)]
+            duration_field = str(len(seq_files))
         else:
             version_name = os.path.splitext(basename)[0]
+            duration_field = "Still Frame"
         shot_name_field = f"{groups['sequence']}_{groups['shotNumber']}"
         try:
             version_number = "v" + format(int(groups['version']), "03d")
@@ -217,9 +217,7 @@ class FileScanner(QThread):
         file_type_field = groups['extension'].upper()
         resolution_field = groups['resolution']
         image_exts = ['EXR','JPG','TIFF','TIF','PNG','TGA','PSD']
-        if file_type_field in image_exts:
-            duration_field = "Still Frame"
-        else:
+        if file_type_field not in image_exts:
             try:
                 cap = cv2.VideoCapture(f)
                 frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -281,7 +279,7 @@ class FileScanner(QThread):
                    "File Type", "Resolution", "Duration", "Delivery Date", 
                    "Delivery Package Name", "Upload Status", "Vendor Name"]
         self.update_preview.emit({'action': 'init', 'headers': headers})
-        sequences = {}  # Key = (Version Name, file type)
+        sequences = {}  # Group by (Version Name, file type)
         for data_dict in valid_files:
             key_seq = (data_dict["Version Name"], data_dict["File Type"].lower())
             if key_seq in sequences:
@@ -309,9 +307,6 @@ class FileScanner(QThread):
         self.update_preview.emit({'action': 'complete'})
         self.log_message.emit("Scanning complete.")
 
-# --------------------
-# Main Window
-# --------------------
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
