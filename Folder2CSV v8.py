@@ -70,10 +70,14 @@ requirements_str = (
     "- Then an underscore and a colorspace+gamma field (no underscores allowed).\n"
     "- Then an optional underscore and fps (digits) may appear (mandatory for sequences and video files).\n"
     "- Then an underscore, then 'v' followed by 1-4 digits (the version).\n"
-    "- For image sequences, the frame padding (one or more digits) must appear and may be preceded by an underscore or dot before the final dot and extension.\n"
-    "- For video files, a dot and extension follow.\n"
+    "- For image sequences, a frame padding (one or more digits) must appear (preceded by an underscore or a dot) before the final dot and extension.\n"
+    "- For video files, only a dot and the extension follow.\n"
 )
 
+# --------------------
+# Validate filename against criteria.
+# Returns (errors, warnings) lists.
+# --------------------
 def validate_filename(basename):
     errors = []
     warnings = []
@@ -107,7 +111,11 @@ def validate_filename(basename):
         errors.append("Version token must be 'v' followed by 1-4 digits")
     return errors, warnings
 
-# Updated regex: pixelMapping is mandatory; frame_padding now uses \d+ to accept any number of digits.
+# --------------------
+# Updated regex:
+# - Pixel mapping is mandatory.
+# - Frame padding now uses \d+ to accept any number of digits.
+# --------------------
 new_pattern = re.compile(
     r'^(?P<sequence>[A-Za-z]{3,4})(?P<shotNumber>\d{4})_' +
     r'(?P<description>[\w-]+)_' +
@@ -119,6 +127,9 @@ new_pattern = re.compile(
     re.IGNORECASE
 )
 
+# --------------------
+# Folder Drop List Widget
+# --------------------
 class FolderDropListWidget(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -150,6 +161,9 @@ class FolderDropListWidget(QListWidget):
         else:
             event.ignore()
 
+# --------------------
+# FileScanner Thread (Multithreaded with directory caching and sequence grouping)
+# --------------------
 class FileScanner(QThread):
     progress = pyqtSignal(int)
     update_preview = pyqtSignal(dict)
@@ -187,19 +201,21 @@ class FileScanner(QThread):
     def build_data_dict(self, f, m):
         groups = m.groupdict()
         basename = os.path.basename(f)
-        # For image sequences, if frame_padding exists, compute common base and count sequence files.
+        # For image sequences: if frame_padding exists, we want the Version Name column to show the full filename without extension.
         if groups.get("frame_padding"):
-            # Remove the trailing separator, frame_padding, and extension.
-            common_base = re.sub(r'([_.]\d+)\.[^.]+$', '', basename)
-            version_name = common_base
+            version_name = os.path.splitext(basename)[0]  # Keep full filename including frame padding.
+            # For grouping, compute a common base (by stripping off trailing separator and frame padding)...
+            common_base = re.sub(r'([_.]\d+)$', '', os.path.splitext(basename)[0])
             directory = os.path.dirname(f)
             listing = self.get_dir_listing(directory)
             pattern = re.compile('^' + re.escape(common_base) + r'([_.]\d+)\.' + re.escape(groups['extension']) + '$', re.IGNORECASE)
             seq_files = [fn for fn in listing if pattern.match(fn)]
             duration_field = str(len(seq_files))
+            grouping_key = common_base
         else:
             version_name = os.path.splitext(basename)[0]
             duration_field = "Still Frame"
+            grouping_key = version_name
         shot_name_field = f"{groups['sequence']}_{groups['shotNumber']}"
         try:
             version_number = "v" + format(int(groups['version']), "03d")
@@ -223,6 +239,7 @@ class FileScanner(QThread):
         vendor_name_field = "CG Fluids"
         data_dict = {
             "Version Name": version_name,
+            "Grouping Key": grouping_key,   # Used only for grouping sequences.
             "Shot Name": shot_name_field,
             "Version Number": version_number,
             "Submitted For": submitted_for,
@@ -271,9 +288,9 @@ class FileScanner(QThread):
                    "File Type", "Resolution", "Duration", "Delivery Date", 
                    "Delivery Package Name", "Upload Status", "Vendor Name"]
         self.update_preview.emit({'action': 'init', 'headers': headers})
-        sequences = {}  # Group by (Version Name, file type)
+        sequences = {}  # Group by (Grouping Key, file type) so only the first file of a sequence is added.
         for data_dict in valid_files:
-            key_seq = (data_dict["Version Name"], data_dict["File Type"].lower())
+            key_seq = (data_dict["Grouping Key"], data_dict["File Type"].lower())
             if key_seq in sequences:
                 continue
             sequences[key_seq] = True
@@ -312,10 +329,10 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Drag and drop the folders you want to scan into the area below.")
         self.log_window = QPlainTextEdit()
         self.log_window.setReadOnly(True)
-        self.log_window.setMinimumHeight(80)  # Made log window smaller
+        self.log_window.setMinimumHeight(80)  # Smaller log window
         folder_drop_group = QGroupBox("Drag and Drop Folders (they will be checked by default)")
         self.folder_drop_list = FolderDropListWidget()
-        self.folder_drop_list.setMinimumHeight(80)  # Made folder drop area smaller
+        self.folder_drop_list.setMinimumHeight(80)  # Smaller folder drop area
         drop_layout = QVBoxLayout()
         drop_layout.addWidget(self.folder_drop_list)
         folder_drop_group.setLayout(drop_layout)
@@ -374,7 +391,7 @@ class MainWindow(QMainWindow):
         delivery_layout.addWidget(self.delivery_package)
         spacing_before_preview = 20
         self.table = QTableWidget()
-        self.table.setMinimumHeight(400)  # Make CSV area taller
+        self.table.setMinimumHeight(400)  # Taller CSV area
         self.table.setColumnCount(12)
         self.table.setHorizontalHeaderLabels([
             "Version Name", "Shot Name", "Version Number", "Submitted For", "Delivery Notes",
@@ -406,13 +423,11 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(button_layout)
         main_layout.addWidget(self.log_window)
         self.setCentralWidget(main_widget)
-
     def remove_selected_folders(self):
         for i in reversed(range(self.folder_drop_list.count())):
             item = self.folder_drop_list.item(i)
             if item.checkState() == Qt.Checked:
                 self.folder_drop_list.takeItem(i)
-
     def get_checked_drop_folders(self):
         checked = []
         for i in range(self.folder_drop_list.count()):
@@ -420,10 +435,8 @@ class MainWindow(QMainWindow):
             if item.checkState() == Qt.Checked:
                 checked.append(item.text())
         return checked
-
     def append_log(self, msg):
         self.log_window.appendPlainText(msg)
-
     def start_scan(self):
         selected_dirs = self.get_checked_drop_folders()
         if not selected_dirs:
@@ -449,14 +462,12 @@ class MainWindow(QMainWindow):
         self.scanner.update_preview.connect(self.update_preview)
         self.scanner.log_message.connect(self.append_log)
         self.scanner.start()
-
     def update_delivery_field(self):
         new_text = self.delivery_package.text().strip()
         if self.scanner:
             self.scanner.delivery_package = new_text
         for row in range(self.table.rowCount()):
             self.table.setItem(row, 9, QTableWidgetItem(new_text))
-
     def update_preview(self, data):
         if data['action'] == 'init':
             pass
@@ -475,10 +486,8 @@ class MainWindow(QMainWindow):
                 self.table.setItem(row_count, col, item)
         elif data['action'] == 'complete':
             self.status_bar.showMessage("Scan complete.")
-
     def update_progress(self, progress):
         self.progress_bar.setValue(progress)
-
     def save_csv(self):
         if not self.scanner or not self.scanner.data:
             QMessageBox.information(self, "No Data", "There is no data to save. Please perform a scan first.")
@@ -510,7 +519,6 @@ class MainWindow(QMainWindow):
                     row = [entry[header] for header in headers]
                     writer.writerow(row)
             self.status_bar.showMessage("CSV saved successfully!")
-
     def on_select_all(self, state):
         if state:
             for cb in self.imageTypeCheckboxes.values():
@@ -523,7 +531,6 @@ class MainWindow(QMainWindow):
             self.select_video_checkbox.setChecked(False)
             self.select_image_checkbox.blockSignals(False)
             self.select_video_checkbox.blockSignals(False)
-
     def on_select_video(self, state):
         if state:
             for cb in self.videoTypeCheckboxes.values():
@@ -536,7 +543,6 @@ class MainWindow(QMainWindow):
             self.select_image_checkbox.setChecked(False)
             self.select_all_checkbox.blockSignals(False)
             self.select_image_checkbox.blockSignals(False)
-
     def on_select_image(self, state):
         if state:
             for cb in self.imageTypeCheckboxes.values():
