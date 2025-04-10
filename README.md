@@ -48,6 +48,10 @@ altgraph==0.17.4 auto-py-to-exe==2.46.0 bottle==0.13.2 bottle-websocket==0.2.9 c
    ```bash
    python your_script_name.py
 ```
+## Create Executable
+  ```pyinstaller --onefile -w --name "Folder2CSV v9" '.\Folder2CSV v9.py'
+```
+
 
 ## How to Use
 
